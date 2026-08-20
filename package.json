@@ -1,0 +1,5 @@
+{
+  "name": "kcc-pauzeplanner",
+  "private": true,
+  "scripts": {"test": "node engine.test.js"}
+}
