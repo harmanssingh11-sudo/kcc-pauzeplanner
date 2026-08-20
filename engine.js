@@ -58,8 +58,8 @@ function buildPlan(people,date){
        const pairTimes=c.times.filter(t=>miniOcc(plan,t)===1);
        if(!pairTimes.length)continue;
        pairTimes.sort((a,b)=>Math.abs(a-c.target)-Math.abs(b-c.target));
-       const optionCount=candidates.filter(x=>unscheduled.has(x.p.id)&&x.times.some(t=>miniOcc(plan,t)===1)).length;
-       if(!best||optionCount<best.optionCount||(optionCount===best.optionCount&&Math.abs(pairTimes[0]-c.target)<Math.abs(best.t-best.target)))best={c,t:pairTimes[0],optionCount};
+       const optionCount=pairTimes.length;
+       if(!best||optionCount<best.optionCount||(optionCount===best.optionCount&&Math.abs(pairTimes[0]-c.target)<Math.abs(best.t-best.c.target)))best={c,t:pairTimes[0],optionCount};
      }
      if(best){place(best.c,best.t,false);continue}
 
