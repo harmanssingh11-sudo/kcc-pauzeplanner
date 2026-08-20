@@ -7,8 +7,6 @@
 
   const $ = (id) => document.getElementById(id);
 
-  // De planningslogica zelf staat in engine.js (window.PauzeEngine), zodat dezelfde code
-  // ook los met Node getest wordt (zie engine.test.js). app-v5.js is puur de UI-laag.
   const { DAYS, BIG_SLOTS, toMin, toHHMM, emptyWeek, weekdayOf, scheduleFor, isEligible, buildPlan } = window.PauzeEngine;
 
   function escapeHtml(str) {
@@ -134,6 +132,7 @@
       await saveProfile(p);
       renderPeople();
       generate();
+      renderPortalOptions();
     });
     $('statPeople').textContent = people.filter((p) => isEligible(p, $('date').value)).length;
   }
@@ -158,6 +157,84 @@
     renderPlan(result);
   }
 
+  function portalDateLocked(dateStr) {
+    if (dateStr !== today()) return false;
+    const n = new Date();
+    return n.getHours() * 60 + n.getMinutes() >= toMin(PREF_LOCK_TIME);
+  }
+
+  function renderPortalOptions() {
+    const nameSelect = $('portalName');
+    if (!nameSelect) return;
+    const current = nameSelect.value;
+    const activeKcc = people.filter((p) => p.active && p.type === 'KCC').sort((a, b) => a.name.localeCompare(b.name));
+    nameSelect.innerHTML = '<option value="">Kies je naam…</option>' + activeKcc.map((p) => `<option value="${p.id}">${escapeHtml(p.name)}</option>`).join('');
+    if (activeKcc.some((p) => p.id === current)) nameSelect.value = current;
+
+    const prefSelect = $('portalPref');
+    if (prefSelect && !prefSelect.dataset.filled) {
+      prefSelect.innerHTML = '<option value="">Geen specifieke tijd</option>' + BIG_SLOTS.map((s) => `<option value="${s}">${s}</option>`).join('');
+      prefSelect.dataset.filled = '1';
+    }
+    if ($('portalDate')) {
+      $('portalDate').min = today();
+      if (!$('portalDate').value) $('portalDate').value = today();
+    }
+  }
+
+  function portalMessage(text, kind) {
+    const el = $('portalMsg');
+    if (!el) return;
+    el.innerHTML = `<div class="alert ${kind}">${escapeHtml(text)}</div>`;
+  }
+
+  async function submitPortalRequest(ev) {
+    ev.preventDefault();
+    const profileId = $('portalName').value;
+    const workDate = $('portalDate').value;
+    const requestedTime = $('portalPref').value;
+    const reason = $('portalReason').value.trim();
+
+    if (!profileId || !workDate) {
+      portalMessage('Kies eerst je naam en een datum.', 'error');
+      return;
+    }
+    if (!requestedTime && !reason) {
+      portalMessage('Kies een gewenste tijd of geef een toelichting - een leeg verzoek heeft niets om aan te werken.', 'error');
+      return;
+    }
+    if (portalDateLocked(workDate)) {
+      portalMessage(`Voorkeuren voor vandaag zijn na ${PREF_LOCK_TIME} gesloten. Neem voor last-minute wijzigingen rechtstreeks contact op met de planner.`, 'error');
+      return;
+    }
+
+    const submitBtn = ev.target.querySelector('button[type="submit"]');
+    if (submitBtn) submitBtn.disabled = true;
+    try {
+      await api('kcc_break_requests', {
+        method: 'POST',
+        headers: { Prefer: 'return=minimal' },
+        body: JSON.stringify([{
+          profile_id: profileId,
+          work_date: workDate,
+          requested_time: requestedTime || null,
+          request_type: 'grote pauze voorkeur',
+          reason: reason || null,
+          status: 'new',
+        }]),
+      });
+      const name = people.find((p) => p.id === profileId)?.name || 'Je';
+      portalMessage(`Bedankt! ${name === 'Je' ? 'Je' : name + "'s"} verzoek voor ${workDate} is verstuurd naar de planner (zie Meldingen & verzoeken).`, 'ok');
+      $('portalReason').value = '';
+      $('portalPref').value = '';
+      await loadRequests();
+    } catch (e) {
+      portalMessage('Versturen is mislukt: ' + e.message, 'error');
+    } finally {
+      if (submitBtn) submitBtn.disabled = false;
+    }
+  }
+
   async function loadRequests() {
     try {
       const rows = await api('kcc_break_requests?select=*&status=eq.new&order=work_date') || [];
@@ -169,13 +246,14 @@
     }
   }
 
-  async function refresh() { await loadPeople(); renderPeople(); generate(); await loadRequests(); updateLockNote(); }
+  async function refresh() { await loadPeople(); renderPeople(); renderPortalOptions(); generate(); await loadRequests(); updateLockNote(); }
 
   setToday();
   $('date').onchange = () => { updateLockNote(); generate(); };
   $('generate').onclick = generate;
   $('loadDemo').onclick = () => refresh().catch((e) => $('alerts').innerHTML = '<div class="alert">Laden mislukt: ' + escapeHtml(e.message) + '</div>');
-  $('addPerson').onclick = () => { people.push({ id: null, name: '', type: 'KCC', active: true, pref: '', week: emptyWeek(), open: true }); renderPeople(); };
+  $('addPerson').onclick = () => { people.push({ id: null, name: '', type: 'KCC', active: true, pref: '', week: emptyWeek(), open: true }); renderPeople(); renderPortalOptions(); };
+  if ($('portalForm')) $('portalForm').addEventListener('submit', submitPortalRequest);
   updateLockNote();
   setInterval(updateLockNote, 60000);
   refresh().catch((e) => $('alerts').innerHTML = '<div class="alert">Laden mislukt: ' + escapeHtml(e.message) + '</div>');
