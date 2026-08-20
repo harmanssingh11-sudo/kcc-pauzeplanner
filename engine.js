@@ -2,7 +2,7 @@
 // V5 FIX: mini pauses may never start after 15:50; every mini must finish by 16:00.
 const DAYS=['Ma','Di','Wo','Do','Vr','Za','Zo'];
 const BIG_SLOTS=['12:00','12:35','13:10','13:45','14:20','14:55','15:30','16:00'];
-const BIG_DUR=30, MINI_DUR=10, NORMAL_CAP=2, EXCEPTION_CAP=3, MINI_CUTOFF=960;
+const BIG_DUR=30, MINI_DUR=10, NORMAL_CAP=2, EXCEPTION_CAP=3, MINI_CAP=2, MINI_CUTOFF=960;
 const toMin=t=>{const [h,m]=String(t).slice(0,5).split(':').map(Number);return h*60+m};
 const toHHMM=m=>`${String(Math.floor(m/60)).padStart(2,'0')}:${String(Math.round(m)%60).padStart(2,'0')}`;
 const FIXED_SLOTS=BIG_SLOTS.map(toMin);
@@ -14,6 +14,7 @@ function rightsFor(s){const h=(toMin(s.end)-toMin(s.start))/60;return h>6?['mini
 function mini1Window(s){return toMin(s.start)<=510?[600,720]:[720,840]}
 function overlaps(a,ad,b,bd){return a<b+bd&&b<a+ad}
 function bigOcc(plan,t){return plan.filter(b=>b.kind==='big'&&b.t===t).length}
+function miniOcc(plan,t){return plan.filter(b=>b.kind!=='big'&&overlaps(t,MINI_DUR,b.t,MINI_DUR)).length}
 function totalLoad(plan,t,dur=MINI_DUR){return plan.filter(b=>overlaps(t,dur,b.t,b.kind==='big'?BIG_DUR:MINI_DUR)).length}
 function buildPlan(people,date){
  const elig=people.filter(p=>isEligible(p,date)).sort((a,b)=>toMin(scheduleFor(a,date).start)-toMin(scheduleFor(b,date).start)||a.name.localeCompare(b.name));
@@ -34,15 +35,17 @@ function buildPlan(people,date){
  ['mini1','mini2'].forEach(kind=>elig.forEach(p=>{const s=scheduleFor(p,date),r=rightsFor(s);if(!r.includes(kind))return;const big=plan.find(b=>b.p===p&&b.kind==='big'),m1=plan.find(b=>b.p===p&&b.kind==='mini1');let lo,hi,target;
   if(kind==='mini1'){const [a,b]=mini1Window(s);lo=Math.max(a,toMin(s.start));hi=Math.min(b,toMin(s.end)-MINI_DUR,MINI_CUTOFF-MINI_DUR);target=big?big.t-120:(lo+hi)/2}
   else{lo=Math.max(toMin(s.start)+60,big?big.t+30:m1?m1.t+MINI_DUR:toMin(s.start));hi=Math.min(toMin(s.end)-MINI_DUR,MINI_CUTOFF-MINI_DUR);target=big?big.t+120:m1?m1.t+120:toMin(s.start)+240}
-  // Absolute hard rule: a mini can never start after 15:50.
   hi=Math.min(hi,MINI_CUTOFF-MINI_DUR);
   if(lo>hi){warnings.push(`${p.name}: ${kind==='mini1'?'Mini 1':'Mini 2'} past niet vóór 16:00 en wordt niet na 16:00 gepland.`);return}
-  const c=[];for(let t=lo;t<=hi;t+=5)c.push(t);c.sort((a,b)=>totalLoad(plan,a)-totalLoad(plan,b)||Math.abs(a-target)-Math.abs(b-target));
-  const t=c[0];
-  if(t+MINI_DUR>MINI_CUTOFF){warnings.push(`${p.name}: ${kind==='mini1'?'Mini 1':'Mini 2'} zou na 16:00 eindigen en is daarom niet ingepland.`);return}
+  const c=[];for(let t=lo;t<=hi;t+=5)c.push(t);
+  // Pack mini's into existing 10-minute capacity first. Never allow more than 2 overlapping mini's.
+  c.sort((a,b)=>miniOcc(plan,b)-miniOcc(plan,a)||Math.abs(a-target)-Math.abs(b-target));
+  const t=c.find(x=>miniOcc(plan,x)<MINI_CAP);
+  if(t===undefined){warnings.push(`${p.name}: geen mini-capaciteit (maximaal 2 tegelijk) beschikbaar binnen het toegestane venster.`);return}
+  if(t+MINI_DUR>MINI_CUTOFF){warnings.push(`${p.name}: mini zou na 16:00 eindigen en is daarom niet ingepland.`);return}
   plan.push({p,kind,t,pref:false,exception:false})
  }));
- // Final safety filter: this is deliberately redundant so no UI path can render a late mini.
+ // Final safety filter: no late mini can reach the UI.
  for(let i=plan.length-1;i>=0;i--) if(plan[i].kind!=='big' && plan[i].t+MINI_DUR>MINI_CUTOFF){warnings.push(`${plan[i].p.name}: late mini verwijderd; mini's moeten uiterlijk 16:00 eindigen.`);plan.splice(i,1)}
  plan.sort((a,b)=>a.t-b.t||a.kind.localeCompare(b.kind));
  const score=Math.max(0,100-warnings.filter(w=>w.includes('3e grote')||w.includes('normale capaciteit')).length*4);
