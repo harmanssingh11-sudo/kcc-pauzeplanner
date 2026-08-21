@@ -1,5 +1,5 @@
 // KCC Pauzeplanner - core scheduling engine.
-// V5.4: echte duo's starten exact gelijk; solo's houden 5 min buffer.
+// V5.5: echte duo's/triples starten exact gelijk; solo's houden 5 min buffer.
 const DAYS=['Ma','Di','Wo','Do','Vr','Za','Zo'];
 const BIG_SLOTS=['12:00','12:35','13:10','13:45','14:20','14:55','15:30','16:00'];
 const BIG_DUR=30, MINI_DUR=10, NORMAL_CAP=2, EXCEPTION_CAP=3, MINI_CAP=2, MINI_EXCEPTION_CAP=3, MINI_CUTOFF=960, PAUSE_BUFFER=5;
@@ -31,8 +31,9 @@ function buildPlan(people,date){
   while(unscheduled.size){let best=null;for(const c of candidates){if(!unscheduled.has(c.p.id))continue;const pairTimes=c.times.filter(t=>plan.some(b=>b.kind!=='big'&&b.t===t)&&miniOcc(plan,t)===1);if(!pairTimes.length)continue;pairTimes.sort((a,b)=>Math.abs(a-c.target)-Math.abs(b-c.target));const optionCount=pairTimes.length;if(!best||optionCount<best.optionCount||(optionCount===best.optionCount&&Math.abs(pairTimes[0]-c.target)<Math.abs(best.t-best.c.target)))best={c,t:pairTimes[0],optionCount}}if(best){place(best.c,best.t,false);continue}
    // Fase 2: nieuwe solo-plek; eindtijd vorige mini + 5 min is hard.
    let single=null;for(const c of candidates){if(!unscheduled.has(c.p.id))continue;const zero=validMiniTimes(plan,c.times).filter(t=>miniOcc(plan,t)===0).sort((a,b)=>Math.abs(a-c.target)-Math.abs(b-c.target));if(!zero.length)continue;if(!single||c.flex<single.c.flex||(c.flex===single.c.flex&&Math.abs(zero[0]-c.target)<Math.abs(single.t-single.c.target)))single={c,t:zero[0]}}if(single){place(single.c,single.t,false);continue}break}
-  // Fase 3: pas als duo en solo niet kunnen, mag een 3e mini.
-  for(const c of candidates){if(!unscheduled.has(c.p.id))continue;const three=validMiniTimes(plan,c.times).filter(t=>miniOcc(plan,t)===2).sort((a,b)=>Math.abs(a-c.target)-Math.abs(b-c.target));if(three.length){place(c,three[0],true);warnings.push(`${c.p.name}: 3e mini tegelijk om ${toHHMM(three[0])}; alleen gebruikt omdat geen duo/single-plek meer beschikbaar was.`)}else warnings.push(`${c.p.name}: geen mini-capaciteit beschikbaar binnen de toegestane tijden.`)}
+  // Fase 3: alleen resterende medewerkers mogen een 3e mini veroorzaken.
+  // Een triple is bewust een overlap: alle drie starten exact gelijk. Daarom geen bufferfilter gebruiken.
+  for(const c of candidates){if(!unscheduled.has(c.p.id))continue;const three=c.times.filter(t=>plan.some(b=>b.kind!=='big'&&b.t===t)&&miniOcc(plan,t)===2).sort((a,b)=>Math.abs(a-c.target)-Math.abs(b-c.target));if(three.length){place(c,three[0],true);warnings.push(`${c.p.name}: 3e mini tegelijk om ${toHHMM(three[0])}; alleen gebruikt omdat geen duo/single-plek meer beschikbaar was.`)}else warnings.push(`${c.p.name}: geen mini-capaciteit beschikbaar binnen de toegestane tijden.`)}
  });
  for(let i=plan.length-1;i>=0;i--)if(plan[i].kind!=='big'&&plan[i].t+MINI_DUR>MINI_CUTOFF){warnings.push(`${plan[i].p.name}: late mini verwijderd; mini's moeten uiterlijk 16:00 eindigen.`);plan.splice(i,1)}
  plan.sort((a,b)=>a.t-b.t||a.kind.localeCompare(b.kind));const score=Math.max(0,100-warnings.filter(w=>w.includes('3e grote')||w.includes('3e mini')).length*4);return {plan,warnings,score,eligibleCount:elig.length}}
