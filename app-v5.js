@@ -5,7 +5,7 @@
   const KEY = 'sb_publishable_VrglfWR4mfvAcrm1MLZY3Q_XH6L5st1';
   const PREF_LOCK_TIME = '09:30';
   const $ = (id) => document.getElementById(id);
-  const { DAYS, BIG_SLOTS, toMin, toHHMM, emptyWeek, isEligible, buildPlan } = window.PauzeEngine;
+  const { DAYS, BIG_SLOTS, toMin, toHHMM, emptyWeek, isEligible, buildPlan, scheduleFor } = window.PauzeEngine;
 
   function escapeHtml(str) {
     return String(str).replace(/[&<>"']/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
@@ -27,6 +27,82 @@
 
   let people = [];
   let searchTerm = '';
+
+  // ---- NIEUW: werkprofielen in-/uitklappen ----
+  let peopleCollapsed = false;
+  try { peopleCollapsed = localStorage.getItem('kcc_people_collapsed') === '1'; } catch(e) {}
+  function applyPeopleCollapse() {
+    const body = $('peoplePanelBody'), btn = $('togglePeople');
+    if (!body) return;
+    body.style.display = peopleCollapsed ? 'none' : '';
+    if (btn) btn.textContent = peopleCollapsed ? '▸ Uitklappen' : '▾ Inklappen';
+  }
+
+  // ---- NIEUW: handmatige aanpassingen (override per datum + logging + leerbias) ----
+  let overridesForDate = {};   // key `${profileId}|${kind}` -> laatste kcc_manual_adjustments-rij voor de gekozen datum
+  let adjustmentsToday = [];   // alle gelogde rijen voor de gekozen datum (voor het logpaneel)
+  let pendingEdits = {};       // key `${profileId}|${kind}` -> nog niet opgeslagen wijziging
+  let biasMap = {};            // key `${profileId}|${kind}` -> geleerde offset in minuten
+  let editingKey = null;       // welke kaart nu in bewerkstand staat
+  let lastResult = null, lastDate = null;
+
+  async function loadOverrides(dateStr) {
+    try {
+      const rows = await api(`kcc_manual_adjustments?work_date=eq.${dateStr}&order=created_at.asc`) || [];
+      adjustmentsToday = rows;
+      const latest = {};
+      rows.forEach(r => { latest[r.profile_id + '|' + r.kind] = r; });
+      overridesForDate = latest;
+    } catch(e) { console.error('Kon handmatige aanpassingen niet laden:', e); overridesForDate = {}; adjustmentsToday = []; }
+  }
+
+  async function loadBias() {
+    try {
+      const rows = await api('kcc_manual_adjustments?select=profile_id,kind,original_time,adjusted_time&order=created_at.desc&limit=500') || [];
+      const groups = {};
+      rows.forEach(r => {
+        const key = r.profile_id + '|' + r.kind;
+        const delta = toMin(r.adjusted_time) - toMin(r.original_time);
+        (groups[key] = groups[key] || []).push(delta);
+      });
+      const map = {};
+      Object.keys(groups).forEach(key => {
+        const deltas = groups[key];
+        if (deltas.length < 2) return; // te weinig data om betrouwbaar te zijn: nog geen bias toepassen
+        const avg = deltas.reduce((a,b)=>a+b,0) / deltas.length;
+        map[key] = Math.round(avg / 5) * 5;
+      });
+      biasMap = map;
+    } catch(e) { console.error('Kon leerdata niet laden:', e); biasMap = {}; }
+  }
+
+  function applyOverrides(result, dateStr) {
+    result.plan.forEach(b => { b.originalT = b.t; });
+    result.plan.forEach(b => {
+      const ov = overridesForDate[b.p.id + '|' + b.kind];
+      if (ov) { b.t = toMin(ov.adjusted_time); b.manual = true; }
+    });
+    result.plan.sort((a,b) => a.t - b.t || a.kind.localeCompare(b.kind));
+  }
+
+  function updateSaveButtonState() {
+    const btn = $('saveAdjustments');
+    if (!btn) return;
+    const n = Object.keys(pendingEdits).length;
+    btn.disabled = n === 0;
+    btn.textContent = n ? `💾 Wijzigingen opslaan (${n})` : '💾 Wijzigingen opslaan';
+  }
+
+  function renderAdjustmentsLog() {
+    const el = $('adjustmentsLog');
+    if (!el) return;
+    if (!adjustmentsToday.length) { el.innerHTML = ''; return; }
+    el.innerHTML = `<div class="alert"><b>📝 Handmatige aanpassingen op ${escapeHtml(formatNL($('date').value))} (${adjustmentsToday.length}):</b><br>` +
+      adjustmentsToday.slice().reverse().map(r => {
+        const time = r.created_at ? new Date(r.created_at).toLocaleTimeString('nl-NL',{hour:'2-digit',minute:'2-digit'}) : '';
+        return `• ${escapeHtml(r.profile_name || '')} — ${escapeHtml(r.kind)} ${String(r.original_time).slice(0,5)} → ${String(r.adjusted_time).slice(0,5)} <span class="agendaMuted">(${escapeHtml(time)})</span>`;
+      }).join('<br>') + '</div>';
+  }
 
   function today() {
     const d = new Date();
@@ -110,17 +186,66 @@
     $('statPeople').textContent=people.filter(p=>isEligible(p,$('date').value)).length;
   }
 
-  function renderPlan(result) {
+  function renderPlan(result, dateStr) {
     const groups = {};
     result.plan.forEach(b => (groups[b.t] = groups[b.t] || []).push(b));
-    $('schedule').innerHTML = Object.keys(groups).sort((a,b)=>a-b).map(t => `<div class="slot"><time>${toHHMM(+t)}</time><div class="cards">${groups[t].map(b=>`<div class="breakcard ${b.kind==='big'?'bigcard':''} ${b.exception?'warningcard':''}"><b>${escapeHtml(b.p.name)}</b> ${b.kind==='big'?'Grote pauze':b.kind==='mini1'?'Mini 1':'Mini 2'}${b.pref?' ⭐':''}${b.exception?' ⚠️':''}</div>`).join('')}</div></div>`).join('');
+    $('schedule').innerHTML = Object.keys(groups).sort((a,b)=>a-b).map(t => {
+      const cards = groups[t].map(b => {
+        const key = `${b.p.id}|${b.kind}`;
+        const s = scheduleFor(b.p, dateStr);
+        const kindLabel = b.kind==='big'?'Grote pauze':b.kind==='mini1'?'Mini 1':'Mini 2';
+        if (editingKey === key) {
+          return `<div class="breakcard editing" data-key="${key}"><b>${escapeHtml(b.p.name)}</b> ${kindLabel}<span class="shifttime">dienst ${s.start}–${s.end}</span><div class="editRow"><input type="time" class="editTimeInput" value="${toHHMM(b.t)}"><button type="button" class="primary confirmEditBtn" data-key="${key}">✓</button><button type="button" class="secondary cancelEditBtn" data-key="${key}">✕</button></div></div>`;
+        }
+        return `<div class="breakcard ${b.kind==='big'?'bigcard':''} ${b.exception?'warningcard':''} ${b.manual?'manual':''}" data-key="${key}"><b>${escapeHtml(b.p.name)}</b> ${kindLabel}${b.pref?' ⭐':''}${b.exception?' ⚠️':''}${b.manual?' 🖐':''}<button type="button" class="editBreakBtn" data-key="${key}" title="Tijd handmatig aanpassen">✏️</button><span class="shifttime">dienst ${s.start}–${s.end}</span></div>`;
+      }).join('');
+      return `<div class="slot"><time>${toHHMM(+t)}</time><div class="cards">${cards}</div></div>`;
+    }).join('');
+
+    $('schedule').querySelectorAll('.editBreakBtn').forEach(btn => btn.onclick = () => {
+      editingKey = btn.dataset.key;
+      renderPlan(lastResult, lastDate);
+    });
+    $('schedule').querySelectorAll('.cancelEditBtn').forEach(btn => btn.onclick = () => {
+      editingKey = null;
+      renderPlan(lastResult, lastDate);
+    });
+    $('schedule').querySelectorAll('.confirmEditBtn').forEach(btn => btn.onclick = () => {
+      const key = btn.dataset.key;
+      const card = btn.closest('.breakcard');
+      const input = card ? card.querySelector('.editTimeInput') : null;
+      const [profileId, kind] = key.split('|');
+      const newMin = input ? toMin(input.value) : NaN;
+      const b = lastResult && lastResult.plan.find(x => x.p.id === profileId && x.kind === kind);
+      if (b && !isNaN(newMin)) {
+        const s = scheduleFor(b.p, lastDate);
+        const outsideShift = newMin < toMin(s.start) || newMin > toMin(s.end);
+        if (outsideShift && !confirm(`Deze tijd valt buiten de dienst van ${b.p.name} (${s.start}–${s.end}). Toch doorgaan?`)) {
+          editingKey = null; renderPlan(lastResult, lastDate); return;
+        }
+        if (newMin !== b.t) {
+          pendingEdits[key] = { profileId, profileName: b.p.name, kind, original: b.originalT, adjusted: newMin };
+          b.t = newMin; b.manual = true;
+          lastResult.plan.sort((a,c) => a.t - c.t || a.kind.localeCompare(c.kind));
+        }
+      }
+      editingKey = null;
+      renderPlan(lastResult, lastDate);
+      updateSaveButtonState();
+    });
   }
 
-  function generate() {
-    const result=buildPlan(people,$('date').value);
+  async function generate() {
+    const dateStr = $('date').value;
+    await loadOverrides(dateStr);
+    const result = buildPlan(people, dateStr, biasMap);
+    applyOverrides(result, dateStr);
+    lastResult = result; lastDate = dateStr;
     $('statPeople').textContent=result.eligibleCount; $('statBreaks').textContent=result.plan.length; $('statWarnings').textContent=result.warnings.length; $('score').textContent=result.score+'%';
     $('alerts').innerHTML=result.warnings.length ? `<div class="alert"><b>⚠️ ${result.warnings.length} aandachtspunt${result.warnings.length>1?'en':''}</b><br>${result.warnings.map(w=>'• '+escapeHtml(w)).join('<br>')}</div>` : '<div class="alert">✓ Geen aandachtspunten.</div>';
-    renderPlan(result);
+    renderPlan(result, dateStr);
+    renderAdjustmentsLog();
+    updateSaveButtonState();
   }
 
   function exportExcel() {
@@ -150,9 +275,36 @@
     } catch(e){alert('Verwerken van het verzoek is mislukt: '+e.message);}
   }
 
-  async function refresh(){await loadPeople();renderPeople();generate();await loadRequests();updateLockNote();}
-  setToday(); $('date').onchange=()=>{updateLockNote();generate();}; $('generate').onclick=generate; $('loadDemo').onclick=()=>refresh().catch(e=>$('alerts').innerHTML='<div class="alert">Laden mislukt: '+escapeHtml(e.message)+'</div>');
+  if ($('saveAdjustments')) $('saveAdjustments').onclick = async () => {
+    const dateStr = $('date').value;
+    const rows = Object.values(pendingEdits).map(e => ({
+      work_date: dateStr, profile_id: e.profileId, profile_name: e.profileName, kind: e.kind,
+      original_time: toHHMM(e.original), adjusted_time: toHHMM(e.adjusted)
+    }));
+    if (!rows.length) return;
+    const btn = $('saveAdjustments');
+    btn.disabled = true; btn.textContent = 'Opslaan...';
+    try {
+      await api('kcc_manual_adjustments', { method:'POST', headers:{Prefer:'return=minimal'}, body: JSON.stringify(rows) });
+      pendingEdits = {};
+      await loadBias();
+      await generate();
+    } catch(e) {
+      alert('Opslaan van de aanpassingen is mislukt: ' + e.message);
+      updateSaveButtonState();
+    }
+  };
+
+  if ($('togglePeople')) $('togglePeople').onclick = () => {
+    peopleCollapsed = !peopleCollapsed;
+    try { localStorage.setItem('kcc_people_collapsed', peopleCollapsed ? '1' : '0'); } catch(e) {}
+    applyPeopleCollapse();
+  };
+
+  async function refresh(){await loadPeople();await loadBias();renderPeople();await generate();await loadRequests();updateLockNote();}
+  setToday(); $('date').onchange=()=>{pendingEdits={};editingKey=null;updateLockNote();generate();}; $('generate').onclick=generate; $('loadDemo').onclick=()=>refresh().catch(e=>$('alerts').innerHTML='<div class="alert">Laden mislukt: '+escapeHtml(e.message)+'</div>');
   $('addPerson').onclick=()=>{const key='new-'+Date.now()+'-'+Math.random().toString(36).slice(2);people.push({id:null,_key:key,name:'',type:'KCC',active:true,pref:'',week:emptyWeek(),open:true});renderPeople();};
   if($('peopleSearch'))$('peopleSearch').oninput=()=>{searchTerm=$('peopleSearch').value;renderPeople();}; if($('downloadExcel'))$('downloadExcel').onclick=exportExcel;
+  applyPeopleCollapse();
   updateLockNote();setInterval(updateLockNote,60000);refresh().catch(e=>$('alerts').innerHTML='<div class="alert">Laden mislukt: '+escapeHtml(e.message)+'</div>');
 })();
