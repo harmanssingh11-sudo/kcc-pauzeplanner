@@ -6,7 +6,8 @@
   const $=id=>document.getElementById(id);
   const {DAYS,BIG_SLOTS,toMin,toHHMM,emptyWeek,buildPlan,rightsFor,effectiveType}=window.PauzeEngine;
   function escapeHtml(str){return String(str).replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":'&#39;'}[c]));}
-  async function api(path,opt={}){const res=await fetch(`${SB}/rest/v1/${path}`,{...opt,headers:{apikey:KEY,Authorization:`Bearer ${KEY}`,'Content-Type':'application/json',...(opt.headers||{})}});const text=await res.text();if(!res.ok)throw new Error(text||String(res.status));return text.trim()?JSON.parse(text):null;}
+  let currentSession=null;
+  async function api(path,opt={}){const token=(currentSession&&currentSession.access_token)||KEY;const res=await fetch(`${SB}/rest/v1/${path}`,{...opt,headers:{apikey:KEY,Authorization:`Bearer ${token}`,'Content-Type':'application/json',...(opt.headers||{})}});const text=await res.text();if(!res.ok)throw new Error(text||String(res.status));return text.trim()?JSON.parse(text):null;}
   function today(){const d=new Date();d.setMinutes(d.getMinutes()-d.getTimezoneOffset());return d.toISOString().slice(0,10);}
   function addDays(dateStr,n){const d=new Date(dateStr+'T12:00:00');d.setDate(d.getDate()+n);return d.toISOString().slice(0,10);}
   function startOfWeek(dateStr){const d=new Date(dateStr+'T12:00:00');const dow=d.getDay()||7;return addDays(dateStr,1-dow);}
@@ -22,26 +23,6 @@
   function preferenceClosed(dateStr){if(dateStr!==today())return false;const n=new Date();return n.getHours()*60+n.getMinutes()>=toMin(PREF_LOCK_TIME);}
   function reqMessage(text,kind){$('reqMsg').innerHTML=`<div class="alert ${kind}">${escapeHtml(text)}</div>`;}
   async function submitRequest(ev){ev.preventDefault();if(!selectedId)return reqMessage('Kies eerst je naam.','error');const workDate=$('reqDate').value,requestedTime=$('reqPref').value,reason=$('reqReason').value.trim();if(!workDate)return reqMessage('Kies een datum.','error');if(!requestedTime&&!reason)return reqMessage('Kies een gewenste tijd of geef een toelichting - een leeg verzoek heeft niets om aan te werken.','error');if(preferenceClosed(workDate))return reqMessage(`Voorkeuren voor vandaag zijn na ${PREF_LOCK_TIME} gesloten. Neem voor last-minute wijzigingen rechtstreeks contact op met de planner.`,'error');const btn=ev.target.querySelector('button[type="submit"]');if(btn)btn.disabled=true;try{await api('kcc_break_requests',{method:'POST',headers:{Prefer:'return=minimal'},body:JSON.stringify([{profile_id:selectedId,work_date:workDate,requested_time:requestedTime||null,reason:reason||null,status:'new',request_type:'voorkeur'}])});reqMessage(`Bedankt! Je verzoek voor ${formatNL(workDate)} is verstuurd naar de planner.`,'ok');$('reqReason').value='';$('reqPref').value='';}catch(e){reqMessage('Versturen is mislukt: '+e.message,'error');}finally{if(btn)btn.disabled=false;}}
-  async function init(){
-    if(!window.KccAuth){document.querySelector('main').insertAdjacentHTML('afterbegin','<div class="alert error">Inlogmodule kon niet geladen worden. Herlaad de pagina.</div>');return;}
-    const auth=await window.KccAuth.requireSession();
-    if(!auth)return; // requireSession stuurt zelf door naar login.html als er geen (gekoppelde) sessie is
-    renderAuthBar(auth.session);myRole=auth.role.role;myProfileId=auth.role.profile_id;
-    populatePrefSelect();$('reqDate').min=today();$('reqDate').value=today();
-    $('prevWeek').onclick=()=>{weekStart=addDays(weekStart,-7);renderAgenda();};$('nextWeek').onclick=()=>{weekStart=addDays(weekStart,7);renderAgenda();};$('thisWeek').onclick=()=>{weekStart=startOfWeek(today());renderAgenda();};
-    $('requestForm').addEventListener('submit',submitRequest);
-    try{
-      await loadPeople();
-      selectedId=myProfileId||'';
-      if(!selectedId||!people.some(p=>p.id===selectedId)){
-        const msg=myRole==='planner'
-          ?'Dit planner-account is (nog) niet gekoppeld aan een eigen werkprofiel, dus er is hier niets van jezelf te tonen. Werk je zelf ook in de KCC-planning mee, koppel je account dan aan een profiel onder "Toegang &amp; accounts" in de planner-tool.'
-          :'Je account is nog niet gekoppeld aan een profiel. Vraag de planner om dit te koppelen onder "Toegang &amp; accounts".';
-        document.querySelector('main').insertAdjacentHTML('afterbegin',`<div class="alert error">${msg}</div>`);
-        return;
-      }
-      renderRoster();renderAgenda();
-    }catch(e){document.querySelector('main').insertAdjacentHTML('afterbegin',`<div class="alert error">Laden mislukt: ${escapeHtml(e.message)}</div>`);}
-  }
+  async function init(){if(!window.KccAuth){document.querySelector('main').insertAdjacentHTML('afterbegin','<div class="alert error">Inlogmodule kon niet geladen worden. Herlaad de pagina.</div>');return;}const auth=await window.KccAuth.requireSession();if(!auth)return;currentSession=auth.session;renderAuthBar(auth.session);myRole=auth.role.role;myProfileId=auth.role.profile_id;populatePrefSelect();$('reqDate').min=today();$('reqDate').value=today();$('prevWeek').onclick=()=>{weekStart=addDays(weekStart,-7);renderAgenda();};$('nextWeek').onclick=()=>{weekStart=addDays(weekStart,7);renderAgenda();};$('thisWeek').onclick=()=>{weekStart=startOfWeek(today());renderAgenda();};$('requestForm').addEventListener('submit',submitRequest);try{await loadPeople();selectedId=myProfileId||'';if(!selectedId||!people.some(p=>p.id===selectedId)){const msg=myRole==='planner'?'Dit planner-account is (nog) niet gekoppeld aan een eigen werkprofiel, dus er is hier niets van jezelf te tonen. Werk je zelf ook in de KCC-planning mee, koppel je account dan aan een profiel onder "Toegang & accounts" in de planner-tool.':'Je account is nog niet gekoppeld aan een profiel. Vraag de planner om dit te koppelen onder "Toegang & accounts".';document.querySelector('main').insertAdjacentHTML('afterbegin',`<div class="alert error">${msg}</div>`);return;}renderRoster();renderAgenda();}catch(e){document.querySelector('main').insertAdjacentHTML('afterbegin',`<div class="alert error">Laden mislukt: ${escapeHtml(e.message)}</div>`);}}
   init();
 })();
