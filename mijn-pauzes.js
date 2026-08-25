@@ -2,7 +2,7 @@
   'use strict';
   const SB='https://lfyxjbcsrsmbaflhbtbx.supabase.co';
   const KEY='sb_publishable_VrglfWR4mfvAcrm1MLZY3Q_XH6L5st1';
-  const PREF_LOCK_TIME='09:30'; const STORAGE_KEY='kcc_mijn_naam_id';
+  const PREF_LOCK_TIME='09:30';
   const $=id=>document.getElementById(id);
   const {DAYS,BIG_SLOTS,toMin,toHHMM,emptyWeek,buildPlan,rightsFor,effectiveType}=window.PauzeEngine;
   function escapeHtml(str){return String(str).replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":'&#39;'}[c]));}
@@ -13,7 +13,6 @@
   let people=[],selectedId='',weekStart=startOfWeek(today()),rosterSaveTimer=null,myRole=null,myProfileId=null;
   function renderAuthBar(session){const el=$('authBar');if(!el)return;el.innerHTML=`<span>${escapeHtml(session.user&&session.user.email||'')}</span><button type="button" class="secondary" id="logoutBtn">Uitloggen</button>`;const btn=$('logoutBtn');if(btn)btn.onclick=async()=>{await window.KccAuth.signOut();location.href='login.html'};}
   async function loadPeople(){const rows=await api('kcc_work_profiles?select=*&order=name')||[];const ids=rows.map(r=>r.id);const schedules=ids.length?await api(`kcc_work_schedule?select=*&profile_id=in.(${ids.join(',')})`):[];people=rows.map(r=>{const p={id:r.id,name:r.name||'',type:r.type||'KCC',active:r.active!==false,pref:r.big_break_preference?String(r.big_break_preference).slice(0,5):'',week:emptyWeek()};(schedules||[]).filter(s=>s.profile_id===r.id).forEach(s=>p.week[s.weekday-1]={work:!!s.working,start:s.start_time?String(s.start_time).slice(0,5):'08:00',end:s.end_time?String(s.end_time).slice(0,5):'18:00',type:s.type||null});return p;});}
-  function populateNameSelect(){const sel=$('whoName');const available=people.slice().sort((a,b)=>a.name.localeCompare(b.name));sel.innerHTML='<option value="">Kies je naam…</option>'+available.map(p=>`<option value="${p.id}">${escapeHtml(p.name)}${p.type!=='KCC'?' — '+escapeHtml(p.type):''}${!p.active?' — inactief':''}</option>`).join('');let remembered='';try{remembered=localStorage.getItem(STORAGE_KEY)||'';}catch(e){}if(remembered&&available.some(p=>p.id===remembered)){sel.value=remembered;selectedId=remembered;}}
   function populatePrefSelect(){$('reqPref').innerHTML='<option value="">Geen specifieke tijd</option>'+BIG_SLOTS.map(s=>`<option value="${s}">${s}</option>`).join('');}
   const WEEKDAY_LABELS=['Maandag','Dinsdag','Woensdag','Donderdag','Vrijdag','Zaterdag','Zondag'];
   function formatNL(dateStr){const [y,m,d]=dateStr.split('-');return `${d}-${m}-${y}`;}
@@ -23,6 +22,26 @@
   function preferenceClosed(dateStr){if(dateStr!==today())return false;const n=new Date();return n.getHours()*60+n.getMinutes()>=toMin(PREF_LOCK_TIME);}
   function reqMessage(text,kind){$('reqMsg').innerHTML=`<div class="alert ${kind}">${escapeHtml(text)}</div>`;}
   async function submitRequest(ev){ev.preventDefault();if(!selectedId)return reqMessage('Kies eerst je naam.','error');const workDate=$('reqDate').value,requestedTime=$('reqPref').value,reason=$('reqReason').value.trim();if(!workDate)return reqMessage('Kies een datum.','error');if(!requestedTime&&!reason)return reqMessage('Kies een gewenste tijd of geef een toelichting - een leeg verzoek heeft niets om aan te werken.','error');if(preferenceClosed(workDate))return reqMessage(`Voorkeuren voor vandaag zijn na ${PREF_LOCK_TIME} gesloten. Neem voor last-minute wijzigingen rechtstreeks contact op met de planner.`,'error');const btn=ev.target.querySelector('button[type="submit"]');if(btn)btn.disabled=true;try{await api('kcc_break_requests',{method:'POST',headers:{Prefer:'return=minimal'},body:JSON.stringify([{profile_id:selectedId,work_date:workDate,requested_time:requestedTime||null,reason:reason||null,status:'new',request_type:'voorkeur'}])});reqMessage(`Bedankt! Je verzoek voor ${formatNL(workDate)} is verstuurd naar de planner.`,'ok');$('reqReason').value='';$('reqPref').value='';}catch(e){reqMessage('Versturen is mislukt: '+e.message,'error');}finally{if(btn)btn.disabled=false;}}
-  async function init(){if(!window.KccAuth){document.querySelector('main').insertAdjacentHTML('afterbegin','<div class="alert error">Inlogmodule kon niet geladen worden. Herlaad de pagina.</div>');return;}const auth=await window.KccAuth.requireSession();if(!auth)return;renderAuthBar(auth.session);myRole=auth.role.role;myProfileId=auth.role.profile_id;populatePrefSelect();$('reqDate').min=today();$('reqDate').value=today();$('whoName').onchange=()=>{selectedId=$('whoName').value;try{if(selectedId)localStorage.setItem(STORAGE_KEY,selectedId);}catch(e){}weekStart=startOfWeek(today());renderRoster();renderAgenda();};$('prevWeek').onclick=()=>{weekStart=addDays(weekStart,-7);renderAgenda();};$('nextWeek').onclick=()=>{weekStart=addDays(weekStart,7);renderAgenda();};$('thisWeek').onclick=()=>{weekStart=startOfWeek(today());renderAgenda();};$('requestForm').addEventListener('submit',submitRequest);try{await loadPeople();if(myRole==='medewerker'){if($('whoPicker'))$('whoPicker').style.display='none';selectedId=myProfileId||'';if(!selectedId||!people.some(p=>p.id===selectedId)){document.querySelector('main').insertAdjacentHTML('afterbegin','<div class="alert error">Je account is nog niet gekoppeld aan een profiel. Vraag de planner om dit te koppelen onder "Toegang &amp; accounts".</div>');return;}renderRoster();renderAgenda();}else{populateNameSelect();if(selectedId){renderRoster();renderAgenda();}}}catch(e){document.querySelector('main').insertAdjacentHTML('afterbegin',`<div class="alert error">Laden mislukt: ${escapeHtml(e.message)}</div>`);}}
+  async function init(){
+    if(!window.KccAuth){document.querySelector('main').insertAdjacentHTML('afterbegin','<div class="alert error">Inlogmodule kon niet geladen worden. Herlaad de pagina.</div>');return;}
+    const auth=await window.KccAuth.requireSession();
+    if(!auth)return; // requireSession stuurt zelf door naar login.html als er geen (gekoppelde) sessie is
+    renderAuthBar(auth.session);myRole=auth.role.role;myProfileId=auth.role.profile_id;
+    populatePrefSelect();$('reqDate').min=today();$('reqDate').value=today();
+    $('prevWeek').onclick=()=>{weekStart=addDays(weekStart,-7);renderAgenda();};$('nextWeek').onclick=()=>{weekStart=addDays(weekStart,7);renderAgenda();};$('thisWeek').onclick=()=>{weekStart=startOfWeek(today());renderAgenda();};
+    $('requestForm').addEventListener('submit',submitRequest);
+    try{
+      await loadPeople();
+      selectedId=myProfileId||'';
+      if(!selectedId||!people.some(p=>p.id===selectedId)){
+        const msg=myRole==='planner'
+          ?'Dit planner-account is (nog) niet gekoppeld aan een eigen werkprofiel, dus er is hier niets van jezelf te tonen. Werk je zelf ook in de KCC-planning mee, koppel je account dan aan een profiel onder "Toegang &amp; accounts" in de planner-tool.'
+          :'Je account is nog niet gekoppeld aan een profiel. Vraag de planner om dit te koppelen onder "Toegang &amp; accounts".';
+        document.querySelector('main').insertAdjacentHTML('afterbegin',`<div class="alert error">${msg}</div>`);
+        return;
+      }
+      renderRoster();renderAgenda();
+    }catch(e){document.querySelector('main').insertAdjacentHTML('afterbegin',`<div class="alert error">Laden mislukt: ${escapeHtml(e.message)}</div>`);}
+  }
   init();
 })();
