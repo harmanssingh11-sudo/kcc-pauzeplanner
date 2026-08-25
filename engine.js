@@ -2,16 +2,21 @@
 // V5.9: buildPlan(people,date,bias,enabled) — 'enabled' zet per pauzetype (mini1/big/mini2) aan/uit
 // welke pauzes de engine überhaupt genereert. Standaard staat alles aan (enabled[k]!==false), dus
 // bestaande aanroepen zonder dit argument gedragen zich exact als voorheen.
+// V5.10: elke dag in p.week heeft nu ook een optioneel 'type' veld ('KCC'/'Webcare'/null). Als een
+// dag een type heeft, overrulet dat het algemene profiel-type (effectiveType) voor die dag alleen -
+// zo kan iemand die normaal Webcare doet op woensdag toch in de KCC-pauzeplanning meedraaien, of
+// andersom. Geen dag-type ingesteld ('type' is null/leeg) => gedraagt zich exact als voorheen.
 const DAYS=['Ma','Di','Wo','Do','Vr','Za','Zo'];
 const BIG_SLOTS=['12:00','12:35','13:10','13:45','14:20','14:55','15:30','16:00'];
 const BIG_DUR=30, MINI_DUR=10, NORMAL_CAP=2, EXCEPTION_CAP=3, MINI_CAP=2, MINI_EXCEPTION_CAP=3, MINI_CUTOFF=960, PAUSE_BUFFER=5;
 const toMin=t=>{const [h,m]=String(t).slice(0,5).split(':').map(Number);return h*60+m};
 const toHHMM=m=>`${String(Math.floor(m/60)).padStart(2,'0')}:${String(Math.round(m)%60).padStart(2,'0')}`;
 const FIXED_SLOTS=BIG_SLOTS.map(toMin);
-function emptyWeek(){return DAYS.map((_,i)=>({work:i<5,start:'08:00',end:'18:00'}))}
+function emptyWeek(){return DAYS.map((_,i)=>({work:i<5,start:'08:00',end:'18:00',type:null}))}
 function weekdayOf(date){const d=new Date(date+'T12:00:00');return d.getDay()||7}
 function scheduleFor(p,date){return p.week[weekdayOf(date)-1]}
-function isEligible(p,date){if(!p.active||p.type!=='KCC')return false;const s=scheduleFor(p,date);return !!s?.work&&toMin(s.end)-toMin(s.start)>240}
+function effectiveType(p,s){return (s&&s.type)||p.type}
+function isEligible(p,date){if(!p.active)return false;const s=scheduleFor(p,date);if(!s?.work)return false;if(effectiveType(p,s)!=='KCC')return false;return toMin(s.end)-toMin(s.start)>240}
 function rightsFor(s){const h=(toMin(s.end)-toMin(s.start))/60;return h>6?['mini1','big','mini2']:h>4?['mini1','mini2']:[]}
 function mini1Window(s){const start=toMin(s.start);const earliest=Math.max(600,start+60);const latest=720;return earliest<=latest?[earliest,latest]:[720,840]}
 function overlaps(a,ad,b,bd){return a<b+bd&&b<a+ad}
@@ -33,4 +38,4 @@ function buildPlan(people,date,bias={},enabled={}){
  });
  for(let i=plan.length-1;i>=0;i--)if(plan[i].kind!=='big'&&plan[i].t+MINI_DUR>MINI_CUTOFF){warnings.push(`${plan[i].p.name}: late mini verwijderd; mini's moeten uiterlijk 16:00 eindigen.`);plan.splice(i,1)}
  plan.sort((a,b)=>a.t-b.t||a.kind.localeCompare(b.kind));const score=Math.max(0,100-warnings.filter(w=>w.includes('3e grote')||w.includes('3e mini')).length*4);return {plan,warnings,score,eligibleCount:elig.length}}
-const PauzeEngine={DAYS,BIG_SLOTS,MINI_DUR,BIG_DUR,toMin,toHHMM,emptyWeek,weekdayOf,scheduleFor,isEligible,rightsFor,mini1Window,overlaps,respectsMiniBuffer,buildPlan};if(typeof module!=='undefined'&&module.exports)module.exports=PauzeEngine;else window.PauzeEngine=PauzeEngine;
+const PauzeEngine={DAYS,BIG_SLOTS,MINI_DUR,BIG_DUR,toMin,toHHMM,emptyWeek,weekdayOf,scheduleFor,effectiveType,isEligible,rightsFor,mini1Window,overlaps,respectsMiniBuffer,buildPlan};if(typeof module!=='undefined'&&module.exports)module.exports=PauzeEngine;else window.PauzeEngine=PauzeEngine;
